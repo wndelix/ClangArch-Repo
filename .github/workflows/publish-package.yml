@@ -1,0 +1,99 @@
+name: Publish pacman package
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Pacman repository
+        required: true
+        type: string
+      package:
+        description: PKGBUILD directory
+        required: true
+        type: string
+      package_sources_commit:
+        description: Full PKGBUILD repository commit SHA
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ inputs.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout binary repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Checkout package sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: wndelix/ClangArch-PKGBUILD
+          ref: ${{ inputs.package_sources_commit }}
+          path: package-sources
+          persist-credentials: false
+
+      - name: Run infrastructure tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for test_script in tests/scripts/*.sh; do
+              bash "${test_script}"
+          done
+
+      - name: Build, validate, and publish package
+        shell: bash
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          PACKAGE: ${{ inputs.package }}
+          PACKAGE_SOURCES_COMMIT: ${{ inputs.package_sources_commit }}
+        run: |
+          set -euo pipefail
+
+          ./scripts/publish-package.sh \
+              "${REPOSITORY}" \
+              "${PACKAGE}" \
+              "${PACKAGE_SOURCES_COMMIT}"
+
+      - name: Commit validated repository
+        shell: bash
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          PACKAGE: ${{ inputs.package }}
+          PACKAGE_SOURCES_COMMIT: ${{ inputs.package_sources_commit }}
+        run: |
+          set -euo pipefail
+
+          source config/seed.env
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+              "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- "${REPOSITORY}/${TARGET_ARCH}"
+
+          if git diff --cached --quiet; then
+              printf 'No repository changes to commit\n'
+              exit 0
+          fi
+
+          printf -v commit_body \
+              'PKGBUILD-Commit: %s\nInfrastructure-Commit: %s' \
+              "${PACKAGE_SOURCES_COMMIT}" \
+              "${GITHUB_SHA}"
+
+          git commit \
+              -m "Publish ${REPOSITORY}/${PACKAGE}" \
+              -m "${commit_body}"
+
+          git push
