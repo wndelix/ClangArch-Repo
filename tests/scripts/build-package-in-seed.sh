@@ -10,6 +10,9 @@ source "${ROOT_DIR}/tests/lib/assertions.sh"
 fixture_root=
 fixture_workspace=
 fixture_sources=
+output_selection_harness=
+expected_main_package=
+expected_debug_package=
 
 cleanup() {
     if [[ -n "${fixture_root}" ]]; then
@@ -17,16 +20,50 @@ cleanup() {
     fi
 }
 
+create_output_selection_harness() {
+    head -n -1 "${SUBJECT}" > "${output_selection_harness}"
+
+    cat >> "${output_selection_harness}" <<'HARNESS'
+
+expected_package_files=(
+    "${EXPECTED_MAIN_PACKAGE}"
+    "${EXPECTED_DEBUG_PACKAGE}"
+)
+produced_package_files=()
+
+collect_produced_packages \
+    expected_package_files \
+    produced_package_files
+
+printf '%s\n' "${produced_package_files[@]}"
+HARNESS
+
+    chmod 0755 "${output_selection_harness}"
+}
+
 create_fixture() {
     fixture_root="$(mktemp -d)"
     fixture_workspace="${fixture_root}/workspace"
     fixture_sources="${fixture_root}/package sources"
+    output_selection_harness="${fixture_root}/output-selection-harness.sh"
 
     mkdir -p \
         "${fixture_workspace}" \
         "${fixture_sources}/sample-package"
 
     : > "${fixture_sources}/sample-package/PKGBUILD"
+
+    local package_output
+
+    package_output="${fixture_workspace}/out/packages"
+    package_output+="/sample-repository/sample-package"
+
+    mkdir -p "${package_output}"
+
+    expected_main_package="${package_output}/sample-package-1.0-1-x86_64.pkg.tar.zst"
+    expected_debug_package="${package_output}/sample-package-debug-1.0-1-x86_64.pkg.tar.zst"
+
+    create_output_selection_harness
 }
 
 run_subject() {
@@ -171,6 +208,25 @@ test_rejects_non_empty_output() {
     rm -f -- "${output_directory}/stale-package.pkg.tar.zst"
 }
 
+test_accepts_absent_optional_predicted_output() {
+    : > "${expected_main_package}"
+
+    run_command env \
+        BUILD_REPOSITORY=sample-repository \
+        BUILD_PACKAGE=sample-package \
+        WORKSPACE_OVERRIDE="${fixture_workspace}" \
+        PACKAGE_SOURCES_OVERRIDE="${fixture_sources}" \
+        EXPECTED_MAIN_PACKAGE="${expected_main_package}" \
+        EXPECTED_DEBUG_PACKAGE="${expected_debug_package}" \
+        bash "${output_selection_harness}"
+
+    assert_status 0
+    assert_contains "${expected_main_package}"
+    assert_not_contains "${expected_debug_package}"
+
+    rm -f -- "${expected_main_package}"
+}
+
 test_requires_root_after_input_validation() {
     if (( EUID == 0 )); then
         return
@@ -194,6 +250,7 @@ main() {
     test_rejects_non_numeric_gid
     test_rejects_missing_pkgbuild
     test_rejects_non_empty_output
+    test_accepts_absent_optional_predicted_output
     test_requires_root_after_input_validation
 
     printf 'PASS: build-package-in-seed input validation\n'

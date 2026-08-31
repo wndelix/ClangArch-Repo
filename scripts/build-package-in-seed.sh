@@ -212,6 +212,52 @@ list_expected_packages() {
         ' bash "${package_dir}"
 }
 
+package_path_is_expected() {
+    local package_file="$1"
+    shift
+
+    local expected_package
+
+    for expected_package in "$@"; do
+        if [[ "${package_file}" == "${expected_package}" ]]; then
+            return
+        fi
+    done
+
+    return 1
+}
+
+collect_produced_packages() {
+    local expected_array_name="$1"
+    local produced_array_name="$2"
+    local -n expected_package_files_ref="${expected_array_name}"
+    local -n produced_package_files_ref="${produced_array_name}"
+    local package_output
+    local package_file
+
+    package_output="$(package_output_directory)"
+    produced_package_files_ref=()
+
+    while IFS= read -r -d '' package_file; do
+        package_path_is_expected \
+            "${package_file}" \
+            "${expected_package_files_ref[@]}" \
+            || die \
+                "makepkg produced an unreported package: ${package_file}"
+
+        produced_package_files_ref+=("${package_file}")
+    done < <(
+        find "${package_output}" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.pkg.tar.zst' \
+            -print0
+    )
+
+    (( "${#produced_package_files_ref[@]}" > 0 )) \
+        || die 'makepkg did not produce any package output'
+}
+
 build_package() {
     local package_dir
     local build_dir
@@ -417,7 +463,7 @@ validate_packages() {
     package_output="$(package_output_directory)"
 
     (( "${#package_files[@]}" > 0 )) \
-        || die 'makepkg did not report any package output'
+        || die 'makepkg did not produce any package output'
 
     for package_file in "${package_files[@]}"; do
         [[ "${package_file}" == "${package_output}/"* ]] \
@@ -434,6 +480,7 @@ validate_packages() {
 }
 
 main() {
+    local -a expected_package_files=()
     local -a package_files=()
 
     validate_inputs
@@ -441,12 +488,17 @@ main() {
     create_builder
     prepare_output_directories
 
-    mapfile -t package_files < <(list_expected_packages)
+    mapfile -t expected_package_files < <(list_expected_packages)
 
-    (( "${#package_files[@]}" > 0 )) \
+    (( "${#expected_package_files[@]}" > 0 )) \
         || die 'makepkg did not report any package output'
 
     build_package
+
+    collect_produced_packages \
+        expected_package_files \
+        package_files
+
     validate_packages "${package_files[@]}"
 
     printf '==> Package build completed\n'
