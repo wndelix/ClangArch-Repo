@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly WORKSPACE="${WORKSPACE_OVERRIDE:-/work}"
 readonly PACKAGE_SOURCES="${PACKAGE_SOURCES_OVERRIDE:-/package-sources}"
+readonly PACMAN_CONFIGURATION="${PACMAN_CONFIGURATION_OVERRIDE:-/etc/pacman.conf}"
 
 builder_uid=
 builder_gid=
@@ -425,14 +426,43 @@ validate_package_archive() {
     inspect_elf_files "${package_file}"
 }
 
-validate_installed_packages() {
+create_validation_pacman_configuration() {
+    local destination="$1"
+
+    [[ -f "${PACMAN_CONFIGURATION}" ]] \
+        || die \
+            "pacman configuration not found: ${PACMAN_CONFIGURATION}" \
+            78
+
+    awk '
+        $0 !~ /^[[:space:]]*NoExtract[[:space:]]*=/
+    ' "${PACMAN_CONFIGURATION}" > "${destination}"
+}
+
+validate_installed_packages() (
     local package_file
     local package_name
     local package_version
     local installed_identity
     local installed_path
+    local validation_pacman_configuration
 
-    pacman -U --noconfirm "$@"
+    validation_pacman_configuration="$(mktemp)"
+    trap \
+        'rm -f -- "${validation_pacman_configuration}"' \
+        EXIT
+
+    create_validation_pacman_configuration \
+        "${validation_pacman_configuration}"
+
+    printf '%s\n' \
+        '==> Installing packages without seed NoExtract filters'
+
+    pacman \
+        --config "${validation_pacman_configuration}" \
+        -U \
+        --noconfirm \
+        "$@"
 
     for package_file in "$@"; do
         read -r package_name package_version \
@@ -453,7 +483,7 @@ validate_installed_packages() {
                     "installed package path is missing: ${installed_path}"
         done < <(pacman -Qlq "${package_name}")
     done
-}
+)
 
 validate_packages() {
     local package_output
